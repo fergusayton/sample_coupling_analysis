@@ -16,7 +16,7 @@ def convert_dB_2_linear(y_data):
     return 10**(y_data/10)
 
 def low_pass_band_filter_fft(cut_off_freq, x_data, y_data, plot_check=True): 
-    unfilt_signal = y_data.to_numpy() 
+    unfilt_signal = y_data
     fft_signal = fft(unfilt_signal)
     fft_frequencies = fftfreq(len(x_data), d=(x_data[1] - x_data[0]))
 
@@ -657,3 +657,134 @@ def fit_lorentzian_dip(freq, signal, window_width=0.02, min_prominence=0.01, to_
                 print("#########################################\n")
     return fits
 
+def multi_lorentzian(x, *params):
+    baseline = params[-1]
+    result = np.zeros_like(x) + baseline
+    for i in range(0, len(params) - 1, 3):
+        f0, gamma, A = params[i], params[i+1], params[i+2]
+        result -= A * gamma**2 / ((x - f0)**2 + gamma**2)
+    return result
+
+
+def fit_multi_lorentzian_dip(freq, signal, window_width=0.02, min_prominence=0.01, max_lorentzians=5, to_print=True):
+    inverted = -signal
+    dip_indices, _ = find_peaks(inverted, prominence=min_prominence)
+
+    # Limit the number of Lorentzians to fit
+    if len(dip_indices) > max_lorentzians:
+        dip_indices = dip_indices[:max_lorentzians]
+
+    # Initial guesses
+    p0 = []
+    for idx in dip_indices:
+        f0_guess = freq[idx]
+        A_guess = np.max(signal) - signal[idx]
+        gamma_guess = window_width / 2
+        p0.extend([f0_guess, gamma_guess, A_guess])
+    p0.append(np.max(signal))  # baseline guess
+
+    try:
+        popt, _ = curve_fit(multi_lorentzian, freq, signal, p0=p0)
+        fits = []
+        for i in range(0, len(popt) - 1, 3):
+            fits.append({
+                "f_dip": popt[i],
+                "FWHM": popt[i+1],
+                "depth": popt[i+2],
+            })
+        baseline_fit = popt[-1]
+
+        if to_print:
+            print("\n######## Multi-Lorentzian Fit Features ########")
+            for i, f in enumerate(fits):
+                print(f"Dip {i+1}:")
+                print(f"  Center: {f['f_dip']:.6f} GHz")
+                print(f"  FWHM:   {f['FWHM']*1e3:.2f} MHz")
+                print(f"  Depth:  {f['depth']:.4f}")
+                print("#########################################\n")
+
+        return {
+            "fits": fits,
+            "baseline": baseline_fit,
+            "fit_curve": multi_lorentzian(freq, *popt)
+        }
+    except RuntimeError:
+        print("Fit failed")
+        return None
+    
+# Tim's Handy Plotting Helpers
+def cm2inch(*tupl):
+    inch = 2.54
+    if isinstance(tupl[0], tuple):
+        return tuple(i/inch for i in tupl[0])
+    else:
+        return tuple(i/inch for i in tupl)
+
+# Note - this function currently only works for single-axis plots
+def setfontsize(size, ax):
+    for item in ([ax.title, ax.xaxis.label, ax.yaxis.label] +
+             ax.get_xticklabels() + ax.get_yticklabels()):
+        item.set_fontsize(size)
+    return
+
+# Alice's small fig style for thesis - 1/2 the page
+def small_fig_style(fig, ax):
+    setfontsize(10, ax)
+    fig.set_dpi(1200)
+    fig.set_tight_layout(True)
+    ax.set_box_aspect(0.625)
+    fig.set_size_inches(cm2inch((8,6)))
+    return
+
+# Alice's full-width fig style for thesis - full page width
+def large_fig_style(fig, ax):
+    setfontsize(11, ax)
+    fig.set_dpi(1200)
+    fig.set_tight_layout(True)
+    fig.set_size_inches(cm2inch((16.4,10)))
+    return
+
+def save_figure(fig, filename="figure", folder="figures", file_format="png", dpi=300):
+    """
+    Save a matplotlib figure with specified settings.
+
+    Parameters:
+        fig (matplotlib.figure.Figure): The figure object to save.
+        filename (str): The base name for the saved file.
+        folder (str): The directory to save the file in.
+        file_format (str): The file format (e.g., 'png', 'pdf', 'svg').
+        dpi (int): The resolution of the saved figure.
+
+    Returns:
+        str: Full path of the saved file.
+    """
+    import os
+
+    # Ensure the directory exists
+    if not os.path.exists(folder):
+        os.makedirs(folder)
+
+    # Construct the full file path
+    full_path = os.path.join(folder, f"{filename}.{file_format}")
+
+    # Save the figure
+    fig.savefig(full_path, format=file_format, dpi=dpi, bbox_inches='tight')
+    print(f"Figure saved as {full_path}")
+
+    return full_path
+
+
+# fit TIME
+def special_lorentzian(x, params = (1, 0, 1)):
+    Gamma, x0, scale = params
+    return scale*(1/np.pi)*(Gamma/2) / ( (x - x0)**2 + (Gamma/2)**2  )
+
+def lorentzian(x, Gamma, x0, scale, bkgd):
+    return scale*(1/np.pi)*(Gamma/2) / ( (x - x0)**2 + (Gamma/2)**2  ) + bkgd
+
+def many_lorentzians(xaxis, *params):
+    param_mtx = np.reshape(np.array(params), [-1, 3])
+    return sum(special_lorentzian(xaxis, param_mtx[i]) for i in range(len(param_mtx)))
+
+def exponential(x, a, b, c):
+    return a*np.exp(-x/b) + c      # don't need to do bx+c in the exponent as this is covered for by the a scaling factor
