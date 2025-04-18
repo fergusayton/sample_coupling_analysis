@@ -666,7 +666,7 @@ def multi_lorentzian(x, *params):
     return result
 
 
-def fit_multi_lorentzian_dip(freq, signal, window_width=0.02, min_prominence=0.01, max_lorentzians=5, to_print=True):
+def fit_multi_lorentzian_dip(freq, signal, window_width=0.8, min_prominence=0.05, max_lorentzians=5, to_print=True):
     inverted = -signal
     dip_indices, _ = find_peaks(inverted, prominence=min_prominence)
 
@@ -712,39 +712,144 @@ def fit_multi_lorentzian_dip(freq, signal, window_width=0.02, min_prominence=0.0
         print("Fit failed")
         return None
     
-# Tim's Handy Plotting Helpers
+# # Tim's Handy Plotting Helpers
+# def cm2inch(*tupl):
+#     inch = 2.54
+#     if isinstance(tupl[0], tuple):
+#         return tuple(i/inch for i in tupl[0])
+#     else:
+#         return tuple(i/inch for i in tupl)
+
+# # Note - this function currently only works for single-axis plots
+# def setfontsize(size, ax):
+#     for item in ([ax.title, ax.xaxis.label, ax.yaxis.label] +
+#              ax.get_xticklabels() + ax.get_yticklabels()):
+#         item.set_fontsize(size)
+#     return
+
+# # Alice's small fig style for thesis - 1/2 the page
+# def small_fig_style(fig, ax):
+#     setfontsize(8, ax)
+#     fig.set_dpi(1200)
+#     fig.set_tight_layout(True)
+#     ax.set_box_aspect(0.625)
+#     fig.set_size_inches(cm2inch((8,6)))
+#     return
+
+# # Alice's full-width fig style for thesis - full page width
+# def large_fig_style(fig, ax):
+#     setfontsize(11, ax)
+#     fig.set_dpi(1200)
+#     fig.set_tight_layout(True)
+#     fig.set_size_inches(cm2inch((16.4,10)))
+#     return
+
+# Convert cm to inches
 def cm2inch(*tupl):
     inch = 2.54
     if isinstance(tupl[0], tuple):
-        return tuple(i/inch for i in tupl[0])
+        return tuple(i / inch for i in tupl[0])
     else:
-        return tuple(i/inch for i in tupl)
+        return tuple(i / inch for i in tupl)
 
-# Note - this function currently only works for single-axis plots
-def setfontsize(size, ax):
+# Dynamically scale font size based on figure width
+def scale_fontsize(fig, base_width_cm=16.4, base_fontsize=11):
+    fig_width_cm = fig.get_size_inches()[0] * 2.54
+    scale = fig_width_cm / base_width_cm
+    return base_fontsize * scale
+
+# Set font size for axis text
+def set_ax_fontsize(size, ax):
     for item in ([ax.title, ax.xaxis.label, ax.yaxis.label] +
-             ax.get_xticklabels() + ax.get_yticklabels()):
+                 ax.get_xticklabels() + ax.get_yticklabels()):
         item.set_fontsize(size)
-    return
 
-# Alice's small fig style for thesis - 1/2 the page
-def small_fig_style(fig, ax):
-    setfontsize(10, ax)
-    fig.set_dpi(1200)
-    fig.set_tight_layout(True)
-    ax.set_box_aspect(0.625)
-    fig.set_size_inches(cm2inch((8,6)))
-    return
+# Set font size for colorbar tick labels and axis label
+def set_colorbar_fontsize(cbar, size):
+    cbar.ax.tick_params(labelsize=size)
+    if cbar.ax.yaxis.label:
+        cbar.ax.yaxis.label.set_size(size)
 
-# Alice's full-width fig style for thesis - full page width
-def large_fig_style(fig, ax):
-    setfontsize(11, ax)
-    fig.set_dpi(1200)
-    fig.set_tight_layout(True)
-    fig.set_size_inches(cm2inch((16.4,10)))
-    return
+def resize_colorbar_vertically(cbar, ax, fraction=0.03, pad=0.02):
+    """Resize a vertical colorbar to match the height of the axes."""
+    fig = ax.figure
+    bbox = ax.get_position()
+    cbar_ax = cbar.ax
+    new_cbar_position = [
+        bbox.x1 + pad,      # x0
+        bbox.y0,            # y0
+        fraction,           # width
+        bbox.height         # height
+    ]
+    cbar_ax.set_position(new_cbar_position)
 
-def save_figure(fig, filename="figure", folder="figures", file_format="png", dpi=300):
+def resize_colorbar_horizontally(cbar, ax, fraction=0.03, pad=0.05):
+    """Resize a horizontal colorbar to match the width of the axes."""
+    fig = ax.figure
+    bbox = ax.get_position()
+    cbar_ax = cbar.ax
+    new_cbar_position = [
+        bbox.x0,            # x0
+        bbox.y0 - pad,      # y0
+        bbox.width,         # width
+        fraction            # height
+    ]
+    cbar_ax.set_position(new_cbar_position)
+
+
+def apply_fig_style(fig, ax, style='small', custom_size_cm=None,
+                    line_size=1.0, marker_size=4, freeze_marker_size=True,
+                    dpi=1200, colorbar=None, colorbar_orientation='vertical',
+                    freeze_lines=True, freeze_ticks=True):
+    styles = {
+        'small': {'size_cm': (8, 6), 'base_fontsize': 10},
+        'large': {'size_cm': (16.4, 10), 'base_fontsize': 10},
+    }
+
+    if style not in styles and custom_size_cm is None:
+        raise ValueError(f"Style '{style}' not recognized. Use one of: {list(styles.keys())}, or provide 'custom_size_cm'.")
+
+    # Use custom size if provided
+    size_cm = custom_size_cm if custom_size_cm is not None else styles[style]['size_cm']
+    base_fontsize = styles.get(style, {}).get('base_fontsize', 10)
+
+    # Resize figure
+    fig.set_dpi(dpi)
+    fig.set_size_inches(cm2inch(size_cm))
+    fig.tight_layout()
+
+    # Aspect ratio for 'small'
+    if style == 'small' and custom_size_cm is None:
+        ax.set_box_aspect(0.625)
+
+    # Scale font size
+    fontsize = scale_fontsize(fig, base_width_cm=16.4, base_fontsize=base_fontsize)
+    set_ax_fontsize(fontsize, ax)
+
+    # Adjust colorbar (if any)
+    if colorbar is not None:
+        set_colorbar_fontsize(colorbar, fontsize)
+        if colorbar_orientation == 'vertical':
+            resize_colorbar_vertically(colorbar, ax)
+        elif colorbar_orientation == 'horizontal':
+            resize_colorbar_horizontally(colorbar, ax)
+
+    # Freeze line and marker sizes
+    if freeze_lines or freeze_marker_size:
+        for line in ax.lines:
+            if freeze_lines:
+                line.set_linewidth(line_size)
+            if freeze_marker_size:
+                line.set_markersize(marker_size)
+
+    # Freeze tick width and length
+    if freeze_ticks:
+        ax.tick_params(width=0.8, length=4)
+
+
+
+
+def save_figure(fig, filename="figure", folder="figures", file_format="png", dpi=1200):
     """
     Save a matplotlib figure with specified settings.
 
@@ -788,3 +893,40 @@ def many_lorentzians(xaxis, *params):
 
 def exponential(x, a, b, c):
     return a*np.exp(-x/b) + c      # don't need to do bx+c in the exponent as this is covered for by the a scaling factor
+
+def normalise_0_1(data_arrray):
+    data_arrray = np.asarray(data_arrray)
+    return (data_arrray - np.min(data_arrray)) / (np.max(data_arrray) - np.min(data_arrray))
+
+
+
+def normalise_traces(traces, floors = None, flip = False):
+    '''
+    Normalisation function for traces. Normalised between a provided floor for *each* trace
+    (or zero) and the maximum of each array OR between zero and the maximum, if no floors provided.
+
+    If flip is true, then subtracts 1 at the end and flips, so it's an upwards peak (for peak fitting convenience).
+
+    Inputs:
+        traces: enumerable of individual np.arrays. Typically a tuple. 
+        floors = None: enumerable of detector floors/blanks the gain setting used to take data. This value will be subtracted before normalisation. 
+        flip = False: if true, make the background 0 and flip the peaks so that they go upwards (rather than down from 1). 
+    
+    Returns:
+        cal_traces: tuple of individual np.arrays.
+    '''
+    
+    # If no floors provided, make them all zero
+    if not floors:
+        floors = np.zeros(len(traces))
+    # Do the thing
+    if flip: # if flip true then flip it
+        cal_traces = tuple( 
+            -1*((trace - floors[i]) / (np.max(trace) - floors[i]) - 1) for i, trace in enumerate(traces)
+        )
+    else: # otherwise don't flip it
+        cal_traces = tuple( 
+            (trace - floors[i]) / (np.max(trace) - floors[i]) for i, trace in enumerate(traces)
+        )
+    
+    return cal_traces
