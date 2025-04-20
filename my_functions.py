@@ -10,8 +10,21 @@ from scipy.fftpack import fft, ifft, fftfreq
 from scipy.special import voigt_profile
 import ast
 
-def convert_linear_2_dB(y_data):
-    return 10* np.log10(y_data)
+def convert_linear_2_dB(y_data, floor=1e-12):
+    """
+    Convert linear S21 magnitude to dB scale safely.
+
+    Parameters:
+        y_data (array-like): Linear magnitude values (should be > 0).
+        floor (float): Minimum threshold to avoid log10(0) or log10(negative).
+    
+    Returns:
+        y_dB (array): Values in decibels.
+    """
+    y_data = np.asarray(y_data)
+    y_data = np.clip(y_data, floor, None)  # clip values below floor to floor
+    return 10 * np.log10(y_data)
+
 def convert_dB_2_linear(y_data):
     return 10**(y_data/10)
 
@@ -312,21 +325,18 @@ import numpy as np
 from scipy.signal import find_peaks
 from scipy.optimize import curve_fit
 
-def lorentzian(f, f0, gamma, A, B):
+def lorentzian_for_s21(f, f0, gamma, A, B):
     """Lorentzian function for fitting."""
     return A / ((f - f0)**2 + (gamma / 2)**2) + B
 
-
 def extract_s21_features(x_data, y_data, to_print=False, db_2_linear=True):
-    ## convert to linear space
-    if db_2_linear: 
-        y_data = convert_dB_2_linear(y_data)
     """
-    Extracts the key features of an S21 resonance curve.
+    Extracts the key features of an S21 resonance curve and returns Lorentzian fit parameters.
 
     Parameters:
         x_data (numpy array): Frequency values.
-        y_data (numpy array): Magnitude of S21 (linear scale, not dB).
+        y_data (numpy array): Magnitude of S21 (dB or linear).
+        db_2_linear (bool): If True, converts dB to linear first.
 
     Returns:
         dict: Extracted features including:
@@ -334,26 +344,35 @@ def extract_s21_features(x_data, y_data, to_print=False, db_2_linear=True):
             - 'f_res': Center frequency of the resonance
             - 'FWHM': Full width at half maximum
             - 'baseline': Estimated baseline level
+            - 'S21_peak': Peak value (linear)
+            - 'fit_params': Lorentzian fit parameters [f_res, gamma, A, baseline]
+            - 'fit_curve': Evaluated Lorentzian at x_data
     """
-    # Find peak in |S21|
-    peak_idx, _ = find_peaks(y_data, height=np.max(y_data) * 0.8)
-    
-    if len(peak_idx) == 0:
+    if db_2_linear: 
+        y_data = convert_dB_2_linear(y_data)
+
+    # Find peak index (high |S21|)
+    peak_idx_array, _ = find_peaks(y_data, height=np.max(y_data) * 0.8)
+    if len(peak_idx_array) == 0:
         raise ValueError("No significant peak found in S21 data.")
 
-    peak_idx = peak_idx[np.argmax(y_data.iloc[peak_idx])]  # Select the highest peak
-    f_res = x_data.iloc[peak_idx]
+    # Get index of global maximum among peaks
+    peak_idx = peak_idx_array[np.argmax(y_data[peak_idx_array])]
+    f_res = x_data[peak_idx]
 
-    # Fit Lorentzian to get better estimate of resonance parameters
+    # Fit Lorentzian to refine
     p0 = [f_res, np.ptp(x_data) / 10, np.max(y_data), np.min(y_data)]
     try:
-        popt, _ = curve_fit(lorentzian, x_data, y_data, p0=p0)
+        popt, _ = curve_fit(lorentzian_for_s21, x_data, y_data, p0=p0)
         f_res, gamma, A, baseline = popt
     except RuntimeError:
-        gamma = np.ptp(x_data) / 10  # Fallback if fit fails
+        gamma = np.ptp(x_data) / 10
         baseline = np.min(y_data)
+        f_res = x_data[peak_idx]
+        A = np.max(y_data)
+        popt = [f_res, gamma, A, baseline]
 
-    # Find FWHM
+    # Calculate FWHM and Q
     peak_value = np.max(y_data)
     half_max = (peak_value + baseline) / 2
     above_half_max = np.where(y_data >= half_max)[0]
@@ -361,19 +380,19 @@ def extract_s21_features(x_data, y_data, to_print=False, db_2_linear=True):
     if len(above_half_max) < 2:
         raise ValueError("Could not determine FWHM.")
 
-    fwhm = x_data.iloc[above_half_max[-1]] - x_data.iloc[above_half_max[0]]
-
-    # Compute 3dB Q factor
+    fwhm = x_data[above_half_max[-1]] - x_data[above_half_max[0]]
     Q_tot = f_res / fwhm if fwhm > 0 else np.inf
 
-    s21_peak = y_data.iloc[peak_idx]
-    
+    # Convert to dB
+    s21_peak = y_data[peak_idx]
     s21_peak_dB = convert_linear_2_dB(s21_peak)
     baseline_dB = convert_linear_2_dB(baseline)
-   
+
+    # Evaluate fit
+    fitted_curve = lorentzian_for_s21(x_data, *popt)
+
     if to_print: 
-        print("\n")
-        print("############S21 Features##############")
+        print("\n############ S21 Features ############")
         print(f"Q Total: {Q_tot:.9f}")
         print(f"Estimated Resonant Frequency (GHz): {f_res:.9f}")
         print(f"FWHM (GHz): {fwhm:.9f}")
@@ -381,15 +400,166 @@ def extract_s21_features(x_data, y_data, to_print=False, db_2_linear=True):
         print(f"S21 Peak (linear): {s21_peak:.9f}")
         print(f"Baseline (dB): {baseline_dB:.9f}")
         print(f"S21 Peak (dB): {s21_peak_dB:.9f}")
-        print("######################################")
-        print("\n")
+        print("######################################\n")
 
     return {
         "Q_tot": Q_tot,
         "f_res": f_res,
         "FWHM": fwhm,
         "baseline": baseline,
-        "S21_peak": s21_peak}
+        "S21_peak": s21_peak,
+        "fit_params": popt,
+        "fit_curve": fitted_curve
+    }
+
+
+# def extract_s21_features(x_data, y_data, to_print=False, db_2_linear=True):
+#     """
+#     Extracts the key features of an S21 resonance curve.
+
+#     Parameters:
+#         x_data (numpy array): Frequency values.
+#         y_data (numpy array): Magnitude of S21 (dB or linear).
+#         db_2_linear (bool): If True, converts dB to linear first.
+
+#     Returns:
+#         dict: Extracted features including:
+#             - 'Q_tot': 3dB quality factor
+#             - 'f_res': Center frequency of the resonance
+#             - 'FWHM': Full width at half maximum
+#             - 'baseline': Estimated baseline level
+#             - 'S21_peak': Peak value (linear)
+#     """
+#     if db_2_linear: 
+#         y_data = convert_dB_2_linear(y_data)
+
+#     # Find peak index (high |S21|)
+#     peak_idx_array, _ = find_peaks(y_data, height=np.max(y_data) * 0.8)
+
+#     if len(peak_idx_array) == 0:
+#         raise ValueError("No significant peak found in S21 data.")
+
+#     # Get index of global maximum among peaks
+#     peak_idx = peak_idx_array[np.argmax(y_data[peak_idx_array])]
+#     f_res = x_data[peak_idx]
+
+#     # Fit Lorentzian to refine
+#     p0 = [f_res, np.ptp(x_data) / 10, np.max(y_data), np.min(y_data)]
+#     try:
+#         popt, _ = curve_fit(lorentzian_for_s21, x_data, y_data, p0=p0)
+#         f_res, gamma, A, baseline = popt
+#     except RuntimeError:
+#         gamma = np.ptp(x_data) / 10
+#         baseline = np.min(y_data)
+#         f_res = x_data[peak_idx]
+
+#     # Calculate FWHM
+#     peak_value = np.max(y_data)
+#     half_max = (peak_value + baseline) / 2
+#     above_half_max = np.where(y_data >= half_max)[0]
+
+#     if len(above_half_max) < 2:
+#         raise ValueError("Could not determine FWHM.")
+
+#     fwhm = x_data[above_half_max[-1]] - x_data[above_half_max[0]]
+#     Q_tot = f_res / fwhm if fwhm > 0 else np.inf
+
+#     s21_peak = y_data[peak_idx]
+#     s21_peak_dB = convert_linear_2_dB(s21_peak)
+#     baseline_dB = convert_linear_2_dB(baseline)
+
+#     if to_print: 
+#         print("\n############ S21 Features ############")
+#         print(f"Q Total: {Q_tot:.9f}")
+#         print(f"Estimated Resonant Frequency (GHz): {f_res:.9f}")
+#         print(f"FWHM (GHz): {fwhm:.9f}")
+#         print(f"Baseline (linear): {baseline:.9f}")
+#         print(f"S21 Peak (linear): {s21_peak:.9f}")
+#         print(f"Baseline (dB): {baseline_dB:.9f}")
+#         print(f"S21 Peak (dB): {s21_peak_dB:.9f}")
+#         print("######################################\n")
+
+#     return {
+#         "Q_tot": Q_tot,
+#         "f_res": f_res,
+#         "FWHM": fwhm,
+#         "baseline": baseline,
+#         "S21_peak": s21_peak
+#     }
+
+# def extract_s21_features(x_data, y_data, to_print=False, db_2_linear=True):
+#     ## convert to linear space
+#     if db_2_linear: 
+#         y_data = convert_dB_2_linear(y_data)
+#     """
+#     Extracts the key features of an S21 resonance curve.
+
+#     Parameters:
+#         x_data (numpy array): Frequency values.
+#         y_data (numpy array): Magnitude of S21 (linear scale, not dB).
+
+#     Returns:
+#         dict: Extracted features including:
+#             - 'Q_tot': 3dB quality factor
+#             - 'f_res': Center frequency of the resonance
+#             - 'FWHM': Full width at half maximum
+#             - 'baseline': Estimated baseline level
+#     """
+#     # Find peak in |S21|
+#     peak_idx, _ = find_peaks(y_data, height=np.max(y_data) * 0.8)
+    
+#     if len(peak_idx) == 0:
+#         raise ValueError("No significant peak found in S21 data.")
+
+#     peak_idx = peak_idx[np.argmax(y_data.iloc[peak_idx])]  # Select the highest peak
+#     f_res = x_data.iloc[peak_idx]
+
+#     # Fit Lorentzian to get better estimate of resonance parameters
+#     p0 = [f_res, np.ptp(x_data) / 10, np.max(y_data), np.min(y_data)]
+#     try:
+#         popt, _ = curve_fit(lorentzian_for_s21, x_data, y_data, p0=p0)
+#         f_res, gamma, A, baseline = popt
+#     except RuntimeError:
+#         gamma = np.ptp(x_data) / 10  # Fallback if fit fails
+#         baseline = np.min(y_data)
+
+#     # Find FWHM
+#     peak_value = np.max(y_data)
+#     half_max = (peak_value + baseline) / 2
+#     above_half_max = np.where(y_data >= half_max)[0]
+
+#     if len(above_half_max) < 2:
+#         raise ValueError("Could not determine FWHM.")
+
+#     fwhm = x_data.iloc[above_half_max[-1]] - x_data.iloc[above_half_max[0]]
+
+#     # Compute 3dB Q factor
+#     Q_tot = f_res / fwhm if fwhm > 0 else np.inf
+
+#     s21_peak = y_data.iloc[peak_idx]
+    
+#     s21_peak_dB = convert_linear_2_dB(s21_peak)
+#     baseline_dB = convert_linear_2_dB(baseline)
+   
+#     if to_print: 
+#         print("\n")
+#         print("############S21 Features##############")
+#         print(f"Q Total: {Q_tot:.9f}")
+#         print(f"Estimated Resonant Frequency (GHz): {f_res:.9f}")
+#         print(f"FWHM (GHz): {fwhm:.9f}")
+#         print(f"Baseline (linear): {baseline:.9f}")
+#         print(f"S21 Peak (linear): {s21_peak:.9f}")
+#         print(f"Baseline (dB): {baseline_dB:.9f}")
+#         print(f"S21 Peak (dB): {s21_peak_dB:.9f}")
+#         print("######################################")
+#         print("\n")
+
+#     return {
+#         "Q_tot": Q_tot,
+#         "f_res": f_res,
+#         "FWHM": fwhm,
+#         "baseline": baseline,
+#         "S21_peak": s21_peak}
 
 def extract_quality_factors(lorentzian_function, x_data, y_data, to_print=False):
     
@@ -759,10 +929,15 @@ def scale_fontsize(fig, base_width_cm=16.4, base_fontsize=11):
     return base_fontsize * scale
 
 # Set font size for axis text
-def set_ax_fontsize(size, ax):
-    for item in ([ax.title, ax.xaxis.label, ax.yaxis.label] +
-                 ax.get_xticklabels() + ax.get_yticklabels()):
-        item.set_fontsize(size)
+def set_ax_fontsize(fontsize, ax, skip_legend=False):
+    ax.xaxis.label.set_size(fontsize)
+    ax.yaxis.label.set_size(fontsize)
+    ax.title.set_size(fontsize)
+    ax.tick_params(labelsize=fontsize)
+
+    if not skip_legend and ax.get_legend() is not None:
+        for text in ax.get_legend().get_texts():
+            text.set_fontsize(fontsize)
 
 # Set font size for colorbar tick labels and axis label
 def set_colorbar_fontsize(cbar, size):
@@ -796,11 +971,17 @@ def resize_colorbar_horizontally(cbar, ax, fraction=0.03, pad=0.05):
     ]
     cbar_ax.set_position(new_cbar_position)
 
-
 def apply_fig_style(fig, ax, style='small', custom_size_cm=None,
                     line_size=1.0, marker_size=4, freeze_marker_size=True,
                     dpi=1200, colorbar=None, colorbar_orientation='vertical',
-                    freeze_lines=True, freeze_ticks=True):
+                    freeze_lines=True, freeze_ticks=True,
+                    legend_fontsize=None,
+                    handle_linewidth=0.5,
+                    legend_handlelength=2.0,
+                    legend_handletextpad=0.5,
+                    legend_labelspacing=0.3,
+                    legend_borderpad=0.3):
+
     styles = {
         'small': {'size_cm': (8, 6), 'base_fontsize': 10},
         'large': {'size_cm': (16.4, 10), 'base_fontsize': 10},
@@ -809,24 +990,19 @@ def apply_fig_style(fig, ax, style='small', custom_size_cm=None,
     if style not in styles and custom_size_cm is None:
         raise ValueError(f"Style '{style}' not recognized. Use one of: {list(styles.keys())}, or provide 'custom_size_cm'.")
 
-    # Use custom size if provided
     size_cm = custom_size_cm if custom_size_cm is not None else styles[style]['size_cm']
     base_fontsize = styles.get(style, {}).get('base_fontsize', 10)
 
-    # Resize figure
     fig.set_dpi(dpi)
     fig.set_size_inches(cm2inch(size_cm))
     fig.tight_layout()
 
-    # Aspect ratio for 'small'
     if style == 'small' and custom_size_cm is None:
-        ax.set_box_aspect(0.625)
+        pass  # ax.set_box_aspect(0.625) optional
 
-    # Scale font size
     fontsize = scale_fontsize(fig, base_width_cm=16.4, base_fontsize=base_fontsize)
-    set_ax_fontsize(fontsize, ax)
+    set_ax_fontsize(fontsize, ax, skip_legend=True)
 
-    # Adjust colorbar (if any)
     if colorbar is not None:
         set_colorbar_fontsize(colorbar, fontsize)
         if colorbar_orientation == 'vertical':
@@ -834,7 +1010,6 @@ def apply_fig_style(fig, ax, style='small', custom_size_cm=None,
         elif colorbar_orientation == 'horizontal':
             resize_colorbar_horizontally(colorbar, ax)
 
-    # Freeze line and marker sizes
     if freeze_lines or freeze_marker_size:
         for line in ax.lines:
             if freeze_lines:
@@ -842,14 +1017,54 @@ def apply_fig_style(fig, ax, style='small', custom_size_cm=None,
             if freeze_marker_size:
                 line.set_markersize(marker_size)
 
-    # Freeze tick width and length
     if freeze_ticks:
         ax.tick_params(width=0.8, length=4)
 
+    # ------- Full Legend Customization with Public Methods Only -------
+    legend = ax.get_legend()
+    if legend is not None:
+        # Font size and title
+        for text in legend.get_texts():
+            text.set_fontsize(legend_fontsize or 10)
+        legend.get_title().set_fontsize(legend_fontsize or 10)
+        legend.set_title(None)
+
+        # Set handle (line) widths
+        for handle in legend.get_lines():
+            handle.set_linewidth(handle_linewidth)
+
+        # Re-construct the legend to apply layout kwargs safely
+        handles, labels = ax.get_legend_handles_labels()
+        loc = legend._loc if hasattr(legend, "_loc") else 'best'
+        frameon = legend.get_frame_on()
+        ncol = legend._ncol if hasattr(legend, "_ncol") else 1
+
+        # Remove the current legend and recreate it with layout control
+        legend.remove()
+        new_legend = ax.legend(
+            handles,
+            labels,
+            loc=loc,
+            fontsize=legend_fontsize or 10,
+            frameon=frameon,
+            ncol=ncol,
+            handlelength=legend_handlelength,
+            handletextpad=legend_handletextpad,
+            labelspacing=legend_labelspacing,
+            borderpad=legend_borderpad,
+        )
+
+        # Apply line width again to new legend (since new one replaces it)
+        for handle in new_legend.get_lines():
+            handle.set_linewidth(handle_linewidth)
 
 
 
-def save_figure(fig, filename="figure", folder="figures", file_format="png", dpi=1200):
+
+
+
+
+def save_figure(fig, filename="figure", folder="/Users/fergusayton/Documents/My Library/fayt3249/2024/Honours Thesis/Thesis Figures and Diagrams/Figures/MyResults", file_format="png", dpi=1200):
     """
     Save a matplotlib figure with specified settings.
 
