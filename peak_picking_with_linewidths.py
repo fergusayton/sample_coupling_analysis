@@ -7,8 +7,9 @@ import re
 from datetime import datetime
 import my_functions as mf
 
-data_path = "data_optics/data_fergus/2025-03-25_IH_line_magnet_ramp/"
-save_path = "data_optics/peak_picking_data_2"
+data_path = r"C:\Users\Donkeykong\Documents\GitHub\sample_coupling_analysis\data_optics\IH_Studies\2025-11-12\2025-12-25_IH_line_magnet_ramp/"
+save_path = "data_optics/2025-11-12_peak_picking_data"
+os.makedirs(save_path, exist_ok=True)
 selected_points = []
 
 def read_B_field(file_name):
